@@ -1,0 +1,366 @@
+@name Spider Tank by Naki
+@inputs [Seat]:entity CamController:wirelink TP
+@persist Precision C [E]:entity Length1 Length2 BreathSin
+@persist Jumping I HIndex HData:table RIndex RData:table ShowBones EditMode HideModel LoadingSpeed LoadingSpeedSlow CodeInterval Step TailAngles:array
+@persist [PosNextLeftFront PosNextRightFront PosNextLeftMiddle PosNextRightMiddle PosNextLeftBack PosNextRightBack PosLastLeftFront PosLastRightFront PosLastLeftMiddle PosLastRightMiddle PosLastLeftBack PosLastRightBack]:vector
+@model models/sprops/geometry/sphere_24.mdl
+if(dupefinished()){reset()}
+if( first() ){
+    ShowBones=0
+    EditMode=0
+    HideModel=0
+    LoadingSpeed=50
+    LoadingSpeedSlow=100
+    CodeInterval=50 
+    
+    E = entity()
+    noCollideAll(E,0)
+    E:propInertia(vec(1))
+    E:setAng(ang(0,0,0))
+    E:setAlpha(0)
+    findIncludePlayerProps(owner())
+    findInSphere(E:pos(),1500)
+    Filter=findToArray()
+    CamController["Filter",array]=Filter
+    rangerPersist(1)
+    rangerFilter(Filter)
+    rangerPersist(1)
+    Precision = 4
+    for(I=1,6){
+        holoCreate(500+I)
+        holoScale(500+I,vec(ShowBones))
+    }
+    function number approach(Cur,Tar,R) {
+        if(Cur < Tar){
+            return clamp(Cur + R,Cur,Tar)
+        }elseif(Cur > Tar){
+            return clamp(Cur - R,Tar,Cur)
+        }
+        return Tar
+    }
+    function angle approachAngle(Cur:angle,Tar:angle,R) 
+    {
+    local DiffP = angnorm(Tar:pitch() - Cur:pitch())
+    local DiffY = angnorm(Tar:yaw() - Cur:yaw())
+    local DiffR = angnorm(Tar:roll() - Cur:roll())
+    if (DiffP > 180) { DiffP -= 360 }
+    if (DiffY > 180) { DiffY -= 360 }
+    if (DiffR > 180) { DiffR -= 360 }
+    return ang(
+                approach(Cur:pitch(),Cur:pitch()+DiffP,R),
+                approach(Cur:yaw(),Cur:yaw()+DiffY,R),
+                approach(Cur:roll(),Cur:roll()+DiffR,R)
+              )
+    }
+    function number icos(A, B, C) {
+        return acos((A^2 + B^2 - C^2) / (2*A*B))    
+    }
+    function quat_ik(NHip, NKnee, NFoot, LengthA, LengthB, Target:vector) {
+        local Base = holoEntity(1)
+        local Origin = holoEntity(NHip):pos()
+        local AxisLocal = Base:toLocalAxis(Target - Origin)
+
+        local AxisAngle = AxisLocal:toAngle():setRoll(-bearing(Target, (Target - Origin):toAngle(), Origin)) #-- forward knee
+        #local AxisAngle = AxisLocal:toAngle():setRoll(-bearing(Origin, Base:angles(), Target)) #-- reverse knee
+
+        local LengthC = min(AxisLocal:length(), LengthA + LengthB)
+        local AxisQuat = quat(AxisAngle) * qRotation(vec(0, 1, 0), 90 + icos(LengthC, LengthA, LengthB))
+        
+        holoAng(NHip, Base:toWorld(AxisQuat:toAngle()))
+        holoAng(NKnee, holoEntity(NHip):toWorld(ang(icos(LengthB, LengthA, LengthC) + 180, 0, 0)))
+        holoAng(NFoot, Base:toWorld(ang(0,(Target - Origin):toAngle():yaw()-Base:angles():yaw(),0):rotateAroundAxis(vec(0,1,0),-1*BreathSin)))
+    }
+    function ranger entity:recRanger(Length, Position:vector, Iteration, Iterations, Pitch, Yaw, Increase){
+        local Result = rangerOffset(Length, Position, This:toWorld(ang(Pitch ^ Increase, Yaw,0)):forward())
+        
+        if(Iteration >= Iterations | Result:hit())
+        {
+            return Result   
+        }     
+        
+        return This:recRanger(Length, Result:position(), Iteration + 1, Iterations, Pitch ^ Increase, Yaw, Increase)
+    }
+    
+    function table entity:getWallclimbProperties(Offset:vector,Length, Iterations, Pitch, RangerCount, Increase, Extra:angle,Distance){
+        local Result = table("center"=vec(),"rotation"=ang())
+        
+        local WallPitch = 0
+        local WallRoll  = 0
+        
+        local RC = max(RangerCount, 4)
+        local TP = This:toWorld(Offset)
+        
+        for(I = 1, RC){
+            local Yaw    = (360 / RC) * I + 45
+            local Ranger = This:recRanger(Length, TP+This:toWorld(vec(Distance,0,0):rotateAroundAxis(vec(0,0,1),(360 / RC) * I + 45))-This:pos(), 1, Iterations, Pitch, Yaw, Increase)
+            local RPos   = Ranger:position()
+            local Dist   = RPos:distance(TP)
+            
+            WallPitch += Dist * cos((I / RC) * 360 + (180 / RC + 22.5))
+            WallRoll  += Dist * sin((I / RC) * 360 + (180 / RC + 22.5))
+            
+            holoPos(I+1000,RPos)
+            
+            Result["center", vector] = Result["center", vector] + RPos
+            Result["rangers", table][I, vector] = RPos
+        }
+
+        Result["center", vector] = Result["center", vector] / RC
+        
+        local P = clamp(WallPitch, -45,45) 
+        local R = clamp(WallRoll,  -45,45) 
+        
+        Result["rotation", angle] = ang(P + Extra:pitch(), This:angles():yaw() + Extra:yaw(), -R + Extra:roll())
+        
+        return Result
+    }
+    local Mat1 = ""#"models/cs_italy/plaster"
+    local Color1 = vec(255)#vec(75,55,25)*0.5+vec(125)
+    
+    local Mat2 = "models/debug/debugwhite"
+    local Color2 = vec(255,150,150)
+    
+    #Model Structure: index, parent entity/parent id, position, angle, scale, model, material, color
+    I=1,HData[I,table]=table(1,entity(),vec(0,0,-15),ang(0,0,0),vec(ShowBones),"models/sprops/cuboids/height12/size_1/cube_12x12x12.mdl","",vec(255))
+    I++,HData[I,table]=table(2,1,vec(-35,0,5),ang(0,0,0),vec(ShowBones),"models/sprops/cuboids/height12/size_1/cube_12x12x12.mdl","",vec(255))
+    
+    Length1=45
+    Length2=55
+    
+    I++,HData[I,table]=table(3,1,vec(30,25,0)*0.7,ang(0,0,0),vec(0.6),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(4,3,vec(0,0,Length1),ang(0,0,0),vec(0.5),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(5,4,vec(0,0,Length2),ang(0,0,0),vec(0.35),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(6,1,vec(0,28,0)*0.7,ang(0,0,0),vec(0.6),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(7,6,vec(0,0,Length1),ang(0,0,0),vec(0.5),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(8,7,vec(0,0,Length2),ang(0,0,0),vec(0.35),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(9,1,vec(-30,25,0)*0.7,ang(0,0,0),vec(0.6),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(10,9,vec(0,0,Length1),ang(0,0,0),vec(0.5),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(11,10,vec(0,0,Length2),ang(0,0,0),vec(0.35),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(12,1,vec(30,-25,0)*0.7,ang(0,0,0),vec(0.6),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(13,12,vec(0,0,Length1),ang(0,0,0),vec(0.5),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(14,13,vec(0,0,Length2),ang(0,0,0),vec(0.35),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(15,1,vec(0,-28,0)*0.7,ang(0,0,0),vec(0.6),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(16,15,vec(0,0,Length1),ang(0,0,0),vec(0.5),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(17,16,vec(0,0,Length2),ang(0,0,0),vec(0.35),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(18,1,vec(-30,-25,0)*0.7,ang(0,0,0),vec(0.6),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(19,18,vec(0,0,Length1),ang(0,0,0),vec(0.5),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(20,19,vec(0,0,Length2),ang(0,0,0),vec(0.35),"models/Combine_Helicopter/helicopter_bomb01.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(I+1,3,vec(0,0,Length1/2),ang(-90,0,180),vec(0.4,0.45,0.45),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,6,vec(0,0,Length1/2),ang(-90,0,180),vec(0.4,0.45,0.45),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,9,vec(0,0,Length1/2),ang(-90,0,180),vec(0.4,0.45,0.45),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,12,vec(0,0,Length1/2),ang(-90,0,180),vec(0.4,0.45,0.45),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,15,vec(0,0,Length1/2),ang(-90,0,180),vec(0.4,0.45,0.45),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,18,vec(0,0,Length1/2),ang(-90,0,180),vec(0.4,0.45,0.45),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(I+1,4,vec(0,0,Length2/2),ang(-90,0,180),vec(0.45,0.4,0.4),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,7,vec(0,0,Length2/2),ang(-90,0,180),vec(0.45,0.4,0.4),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,10,vec(0,0,Length2/2),ang(-90,0,180),vec(0.45,0.4,0.4),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,13,vec(0,0,Length2/2),ang(-90,0,180),vec(0.45,0.4,0.4),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,16,vec(0,0,Length2/2),ang(-90,0,180),vec(0.45,0.4,0.4),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,19,vec(0,0,Length2/2),ang(-90,0,180),vec(0.45,0.4,0.4),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(I+1,5,vec(0,0,-65/4),ang(90,0,180),vec(0.3,0.25,0.25),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,8,vec(0,0,-70/4),ang(90,0,180),vec(0.3,0.25,0.25),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,11,vec(0,0,-75/4),ang(90,0,180),vec(0.3,0.25,0.25),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,14,vec(0,0,-65/4),ang(90,0,180),vec(0.3,0.25,0.25),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,17,vec(0,0,-70/4),ang(90,0,180),vec(0.3,0.25,0.25),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,20,vec(0,0,-75/4),ang(90,0,180),vec(0.3,0.25,0.25),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(I+1,2,vec(-35,0,0):rotateAroundAxis(vec(0,1,0),10),ang(10,0,0),vec(0.7,1,1),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,1,vec(10,0,0):rotateAroundAxis(vec(0,1,0),5),ang(5,0,0),vec(0.35,0.8,0.45),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,1,vec(-15,0,0),ang(0,180,0),vec(0.2,0.7,0.45),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(I+1,1,vec(-15,0,-3),ang(190,0,0),vec(0.2,0.7,0.45),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,1,vec(8,0,-4),ang(0,0,180),vec(0.35,0.7,0.45),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(I+1,1,vec(30,6,-5),ang(25,5,-5),vec(0.125,0.25,0.17),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,1,vec(30,-6,-5),ang(25,-5,5),vec(0.125,0.25,0.17),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    
+    I++,HData[I,table]=table(I+1,1,vec(32,6,-17),ang(110,15,-25),vec(0.15,0.12,0.15),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    I++,HData[I,table]=table(I+1,1,vec(32,-6,-17),ang(110,-15,25),vec(0.15,0.12,0.15),"models/props_combine/headcrabcannister01a.mdl",Mat1,Color1)
+    
+    #model create function, add more stuff if needed
+    function modelCreate(Table:table){
+        local Index = Table[1,number]
+        local Parent = Table[2,entity] ? Table[2,entity] : holoEntity(Table[2,number])
+        local Position = Parent:toWorld(Table[3,vector])
+        local Angle = Parent:toWorld(Table[4,angle])
+        local Scale = Table[5,vector]
+        local Model = Table[6,string]
+        local Material = Table[7,string]
+        local Color = Table[8,vector]
+        holoCreate(Index)
+        holoPos(Index,Position)
+        holoAng(Index,Angle)
+        holoParent(Index,Parent)
+        holoModel(Index,Model)
+        holoMaterial(Index,Material=="fullbright" ? "models/debug/debugwhite" : Material)
+        holoColor(Index,Color)
+        holoScale(Index,Scale)
+        holoDisableShading(Index,Material=="fullbright")
+    }
+    function number icos(A, B, C) {
+        return acos((A^2 + B^2 - C^2) / (2*A*B))    
+    }
+    holoPos(501,E:toWorld(vec(100,0,-45*0.5):rotateAroundAxis(vec(0,0,1),90-55)))
+    holoPos(502,E:toWorld(vec(90,0,-45*0.5):rotateAroundAxis(vec(0,0,1),90)))
+    holoPos(503,E:toWorld(vec(100,0,-40*0.5):rotateAroundAxis(vec(0,0,1),90+45)))
+    holoPos(504,E:toWorld(vec(100,0,-40*0.5):rotateAroundAxis(vec(0,0,1),-90+55)))
+    holoPos(505,E:toWorld(vec(90,0,-35*0.5):rotateAroundAxis(vec(0,0,1),-90)))
+    holoPos(506,E:toWorld(vec(100,0,-35*0.5):rotateAroundAxis(vec(0,0,1),-90-45)))
+    
+    PosLastLeftFront=PosNextLeftFront=holoEntity(501):pos()
+    PosLastRightFront=PosNextRightFront=holoEntity(502):pos()
+    PosLastLeftMiddle=PosNextLeftMiddle=holoEntity(503):pos()
+    PosLastRightMiddle=PosNextRightMiddle=holoEntity(504):pos()
+    PosLastLeftBack=PosNextLeftBack=holoEntity(505):pos()
+    PosLastRightBack=PosNextRightBack=holoEntity(506):pos()
+    
+    CamController["Position",vector]=vec(0,0,45)
+    CamController["Parent",entity]=E
+    
+    timer("ModelSetup",LoadingSpeed)
+}elseif(clk("ModelSetup")){
+    if(holoRemainingSpawns()>=5&&holoCanCreate()){
+        HIndex++
+        if(HIndex>HData:count()){
+            if(!EditMode){
+                timer("interval",CodeInterval)
+            }
+            print("Model Spawned with "+HData:count()+" holos!")
+            HIndex=0
+        }else{
+            modelCreate(HData[HIndex,table])
+            timer("ModelSetup",LoadingSpeed)
+        }
+    }else{
+        timer("ModelSetup",LoadingSpeedSlow)
+    }
+}elseif(clk("interval")){
+    timer("interval",CodeInterval)
+    if(changed(players():count())){
+        rangerFilter(players())
+    }
+    Dr=Seat:driver(),CamController["Activated",number]=Dr:isPlayer()
+    if(changed(TP)){
+        CamController["Position",vector]=TP ? vec(0,0,45) : vec(35,0,-5)
+        CamController["Parent",entity]=TP ? E : entity()
+        CamController["Distance",number]=TP ? 150 : 0
+    }
+    CamController["UnRoll",number]=sin(systime()*180*180)
+    W=Dr:keyForward()
+    S=Dr:keyBack()
+    A=Dr:keyLeft()
+    D=Dr:keyRight()
+    Shift=Dr:keySprint()
+    Space=Dr:keyJump()
+    
+    Mouse1=Dr:keyAttack1()
+    Mouse2=Dr:keyAttack2()
+    
+    AimAng=CamController["CamAng",angle]
+    On_Ground=(rangerOffsetHull(100,E:pos(),-E:up(),vec(25,25,25)):hit()|rangerOffsetHull(75,E:pos(),-vec(0,0,1),vec(5,5,5)):hit()|rangerOffsetHull(75,E:pos(),E:vel():normalized(),vec(5,5,5)):hit())*!Jumping
+    if(changed(Space)&Space&On_Ground){
+        Jumping=1
+        timer("unjump",500)
+        E:propSetVelocity((CamController["CamAng",angle]:forward()+(E:up()*0.2))*35*70)
+    }
+    E:propGravity(!On_Ground)
+    local WallData = E:getWallclimbProperties(E:velL()*vec(0.02,0,0),50, 4, 10, Precision, 1.283, ang(),0)
+    if(On_Ground){
+        E:applyAngForce((ang(-90*clamp(1-rangerOffsetHull(250+E:velL():x()*0.1,E:pos(),E:forward(),vec(5,5,5)):distance()*0.01,0,1),E:toLocal(AimAng):yaw(),90*clamp(1-rangerOffsetHull(250+abs(E:velL():y())*0.1,E:pos(),-E:right(),vec(5,5,5)):distance()*0.01,0,1)-90*clamp(1-rangerOffsetHull(250+abs(E:velL():y())*0.1,E:pos(),E:right(),vec(5,5,5)):distance()*0.01,0,1)) * 4 + WallData["rotation", angle]:setYaw(0) * 4 - E:angVel() * 0.9) * E:mass())
+    }else{
+        E:applyAngForce(E:toLocal(E:vel():toAngle():rotateAroundAxis(vec(0,1,0):rotateAroundAxis(vec(0,0,1),E:angles():yaw()),-45)) * 45 -(E:angVel() * 0.7) * E:mass())
+    }
+    local Hover = ((WallData["center", vector]+(E:up()*rangerOffsetHull(100,E:pos(),-E:up(),vec(25,25,25)):distance()*0.1)) + E:pos() * 3) / 4
+    E:applyForce((E:forward()*(W-S)*(Shift ? 200 : 100) + E:right()*(D-A)*(Shift ? 180 : 80) + (Hover + E:up() * 15 - E:pos()) * 20 - E:vel() * 0.6) * E:mass() * On_Ground)
+    
+    Sin=sin(systime()*360*(Shift ? 2.5 : 2))
+    if(Sin>0){
+        Step=1
+    }else{
+        Step=0
+    }
+    if(On_Ground){
+        if(changed(Step)){
+            if(holoEntity(506):pos():distance(PosLastRightBack)>25|holoEntity(505):pos():distance(PosLastLeftBack)>25){
+                entity():emitSound("physics/metal/metal_barrel_impact_hard5.wav",100,100)
+                PosLastLeftFront=PosNextLeftFront=holoEntity(501):pos()
+                PosLastRightFront=PosNextRightFront=holoEntity(502):pos()
+                PosLastLeftMiddle=PosNextLeftMiddle=holoEntity(503):pos()
+                PosLastRightMiddle=PosNextRightMiddle=holoEntity(504):pos()
+                PosLastLeftBack=PosNextLeftBack=holoEntity(505):pos()
+                PosLastRightBack=PosNextRightBack=holoEntity(506):pos()
+            }
+            if(Step){
+                local Ranger = rangerOffsetHull(150,E:toWorld(vec(100,0,15):rotateAroundAxis(vec(0,0,1),90-55)+E:velL()*0.1),-E:up(),vec(5,5,5))
+                holoPos(501,Ranger:pos()+Ranger:hitNormal()*30)
+                holoAng(501,Ranger:hitNormal():toAngle())
+                
+                local Ranger=rangerOffsetHull(150,E:toWorld(vec(90,0,15):rotateAroundAxis(vec(0,0,1),-90)+E:velL()*0.1),-E:up(),vec(5,5,5))
+                holoPos(505,Ranger:pos()+Ranger:hitNormal()*30)
+                holoAng(505,Ranger:hitNormal():toAngle())
+                
+                local Ranger=rangerOffsetHull(150,E:toWorld(vec(100,0,15):rotateAroundAxis(vec(0,0,1),90+45)+E:velL()*0.1),-E:up(),vec(5,5,5))
+                holoPos(503,Ranger:pos()+Ranger:hitNormal()*30)
+                holoAng(503,Ranger:hitNormal():toAngle())
+            }else{
+                local Ranger = rangerOffsetHull(150,E:toWorld(vec(100,0,15):rotateAroundAxis(vec(0,0,1),-90+55)+E:velL()*0.1),-E:up(),vec(5,5,5))
+                holoPos(504,Ranger:pos()+Ranger:hitNormal()*30)
+                holoAng(504,Ranger:hitNormal():toAngle())
+                
+                local Ranger=rangerOffsetHull(150,E:toWorld(vec(90,0,15):rotateAroundAxis(vec(0,0,1),90)+E:velL()*0.1),-E:up(),vec(5,5,5))
+                holoPos(502,Ranger:pos()+Ranger:hitNormal()*30)
+                holoAng(502,Ranger:hitNormal():toAngle())
+                
+                local Ranger=rangerOffsetHull(150,E:toWorld(vec(100,0,15):rotateAroundAxis(vec(0,0,1),-90-45)+E:velL()*0.1),-E:up(),vec(5,5,5))
+                holoPos(506,Ranger:pos()+Ranger:hitNormal()*30)
+                holoAng(506,Ranger:hitNormal():toAngle())
+            }
+        }
+    }else{
+        holoPos(501,E:toWorld(vec(100,0,-45):rotateAroundAxis(vec(0,0,1),90-55)))
+        holoPos(502,E:toWorld(vec(90,0,-45):rotateAroundAxis(vec(0,0,1),90)))
+        holoPos(503,E:toWorld(vec(100,0,-40):rotateAroundAxis(vec(0,0,1),90+45)))
+        holoPos(504,E:toWorld(vec(100,0,-40):rotateAroundAxis(vec(0,0,1),-90+55)))
+        holoPos(505,E:toWorld(vec(90,0,-35):rotateAroundAxis(vec(0,0,1),-90)))
+        holoPos(506,E:toWorld(vec(100,0,-35):rotateAroundAxis(vec(0,0,1),-90-45)))
+    }
+    
+    quat_ik(3,4,5,Length1,Length2,holoEntity(501):pos())
+    quat_ik(6,7,8,Length1,Length2,holoEntity(502):pos())
+    quat_ik(9,10,11,Length1,Length2,holoEntity(503):pos())
+    
+    quat_ik(12,13,14,Length1,Length2,holoEntity(504):pos())
+    quat_ik(15,16,17,Length1,Length2,holoEntity(505):pos())
+    quat_ik(18,19,20,Length1,Length2,holoEntity(506):pos())
+    
+    local VelL = E:velL()*0.5
+    
+    StepSin = abs(sin(systime()*360*(Shift ? 2.5 : 2)))*clamp(abs(E:vel():length()*0.01),0,1)*On_Ground
+    
+    TailAngle = holoEntity(1):toWorld(clamp(ang(-VelL:z()+75*StepSin / 10, VelL:y() / 10, 0),-ang(15),ang(15)))
+    
+    #-- shift the angle through the array
+    TailAngles:unshiftAngle(TailAngle)
+    
+    TailAngles:removeAngle(3)
+    holoAng(2, TailAngles[2, angle])
+    
+    BreathSin=sin(systime()*180*0.7)*clamp(1-E:vel():length()*0.1,0,1)
+    BreathCos=cos(systime()*180*0.7)*clamp(1-E:vel():length()*0.1,0,1)
+    
+    holoPos(1,E:toWorld(vec(0,0,-clamp(rangerOffsetHull(100,E:pos(),-E:up(),vec(5,5,5)):distance()-35,0,45)-1*StepSin)+vec(0,0,1*BreathCos)))
+    
+    HeadAng=entity():toLocal(approachAngle(holoEntity(1):angles(),CamController["CamAng",angle],5))*Dr:isPlayer()
+    holoAng(1,entity():toWorld(ang(1*BreathSin,0,0)+ang(10*clamp(-VelL:z()*0.01,-1,1)*clamp(VelL:x()*0.02,-1,1)*!On_Ground + HeadAng:pitch()*0.65-clamp(VelL:x()*0.02,-1,1)*StepSin,HeadAng:yaw()*0.25+10*clamp(VelL:y()*0.02,-1,1),0)))
+}
+if(clk("unjump")){
+    Jumping=0
+}
